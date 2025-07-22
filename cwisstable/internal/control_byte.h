@@ -152,7 +152,6 @@ static inline bool CWISS_IsEmptyOrDeleted(CWISS_ControlByte c) {
 #define CWISS_Group_BitMask(x) \
   (CWISS_BitMask){(uint64_t)(x), CWISS_Group_kWidth, CWISS_Group_kShift};
 
-// TODO(#4): Port this to NEON.
 #if CWISS_HAVE_SSE2
 // Reference guide for intrinsics used below:
 //
@@ -208,7 +207,7 @@ static inline CWISS_Group CWISS_Group_new(const CWISS_ControlByte* pos) {
 static inline CWISS_BitMask CWISS_Group_Match(const CWISS_Group* self,
                                               CWISS_h2_t hash) {
   return CWISS_Group_BitMask(
-      _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8(hash), *self)))
+      _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8(hash), *self)));
 }
 
 // Returns a bitmask representing the positions of empty slots.
@@ -250,7 +249,172 @@ static inline void CWISS_Group_ConvertSpecialToEmptyAndFullToDeleted(
   #endif
   _mm_storeu_si128((CWISS_Group*)dst, res);
 }
-#else  // CWISS_HAVE_SSE2
+
+#elif CWISS_HAVE_NEON
+// Reference guide for intrinsics used below:
+//
+// * int8x16_t: A 128-bit NEON vector containing 16 signed 8-bit integers.
+//
+// * vld1q_s8:       Loads 16 bytes from memory into a vector.
+// * vst1q_s8:       Stores 16 bytes from a vector to memory.
+//
+// * vdupq_n_s8:     Returns a vector with the same i8 in each lane.
+// * vmovq_n_s8:     Same as vdupq_n_s8.
+//
+// * vceqq_s8:       Component-wise compares two i8 vectors for equality,
+//                   filling each lane with 0x00 or 0xFF.
+// * vcgtq_s8:       Component-wise compares two i8 vectors for greater than,
+//                   filling each lane with 0x00 or 0xFF.
+// * vcltq_s8:       Component-wise compares two i8 vectors for less than,
+//                   filling each lane with 0x00 or 0xFF.
+//
+// * vorrq_s8:       ORs two vectors together.
+// * vandq_s8:       ANDs two vectors together.
+// * vbicq_s8:       Clears bits in first vector based on second vector (AND NOT).
+//
+// * vshrq_n_s8:     Right shifts each element by a constant.
+// * vshlq_n_s8:     Left shifts each element by a constant.
+//
+// NEON doesn't have a direct equivalent to _mm_movemask_epi8, so we need
+// to implement it using other operations.
+
+typedef int8x16_t CWISS_Group;
+  #define CWISS_Group_kWidth ((size_t)16)
+  #define CWISS_Group_kShift 0
+
+// NEON does not provide a version of this function.
+// Creates a 16-bit mask from the most significant bits of the 16 signed or
+// unsigned 8-bit integers in a and zero extends the upper bits.
+// https://msdn.microsoft.com/en-us/library/vstudio/s090c8fk(v=vs.100).aspx
+static inline int CWISS_neon_movemask_epi8(int8x16_t a) {
+    // Use increasingly wide shifts+adds to collect the sign bits
+    // together.
+    // Since the widening shifts would be rather confusing to follow in little
+    // endian, everything will be illustrated in big endian order instead. This
+    // has a different result - the bits would actually be reversed on a big
+    // endian machine.
+    // Starting input (only half the elements are shown):
+    // 89 ff 1d c0 00 10 99 33
+    uint8x16_t input = vreinterpretq_u8_s8(a);
+    // Shift out everything but the sign bits with an unsigned shift right.
+    //
+    // Bytes of the vector::
+    // 89 ff 1d c0 00 10 99 33
+    // \  \  \  \  \  \  \  \    high_bits = (uint16x4_t)(input >> 7)
+    //  |  |  |  |  |  |  |  |
+    // 01 01 00 01 00 00 01 00
+    //
+    // Bits of first important lane(s):
+    // 10001001 (89)
+    // \______
+    //        |
+    // 00000001 (01)
+    uint16x8_t high_bits = vreinterpretq_u16_u8(vshrq_n_u8(input, 7));
+    // Merge the even lanes together with a 16-bit unsigned shift right + add.
+    // 'xx' represents garbage data which will be ignored in the final result.
+    // In the important bytes, the add functions like a binary OR.
+    //
+    // 01 01 00 01 00 00 01 00
+    //  \_ |  \_ |  \_ |  \_ |   paired16 = (uint32x4_t)(input + (input >> 7))
+    //    \|    \|    \|    \|
+    // xx 03 xx 01 xx 00 xx 02
+    //
+    // 00000001 00000001 (01 01)
+    //        \_______ |
+    //                \|
+    // xxxxxxxx xxxxxx11 (xx 03)
+    uint32x4_t paired16 =
+        vreinterpretq_u32_u16(vsraq_n_u16(high_bits, high_bits, 7));
+    // Repeat with a wider 32-bit shift + add.
+    // xx 03 xx 01 xx 00 xx 02
+    //     \____ |     \____ |  paired32 = (uint64x1_t)(paired16 + (paired16 >>
+    //     14))
+    //          \|          \|
+    // xx xx xx 0d xx xx xx 02
+    //
+    // 00000011 00000001 (03 01)
+    //        \\_____ ||
+    //         '----.\||
+    // xxxxxxxx xxxx1101 (xx 0d)
+    uint64x2_t paired32 =
+        vreinterpretq_u64_u32(vsraq_n_u32(paired16, paired16, 14));
+    // Last, an even wider 64-bit shift + add to get our result in the low 8 bit
+    // lanes. xx xx xx 0d xx xx xx 02
+    //            \_________ |   paired64 = (uint8x8_t)(paired32 + (paired32 >>
+    //            28))
+    //                      \|
+    // xx xx xx xx xx xx xx d2
+    //
+    // 00001101 00000010 (0d 02)
+    //     \   \___ |  |
+    //      '---.  \|  |
+    // xxxxxxxx 11010010 (xx d2)
+    uint8x16_t paired64 =
+        vreinterpretq_u8_u64(vsraq_n_u64(paired32, paired32, 28));
+    // Extract the low 8 bits from each 64-bit lane with 2 8-bit extracts.
+    // xx xx xx xx xx xx xx d2
+    //                      ||  return paired64[0]
+    //                      d2
+    // Note: Little endian would return the correct value 4b (01001011) instead.
+    return vgetq_lane_u8(paired64, 0) | ((int) vgetq_lane_u8(paired64, 8) << 8);
+}
+
+static inline CWISS_Group CWISS_Group_new(const CWISS_ControlByte* pos) {
+  return vld1q_s8(pos);
+}
+
+// Returns a bitmask representing the positions of slots that match hash.
+static inline CWISS_BitMask CWISS_Group_Match(const CWISS_Group* self,
+                                              CWISS_h2_t hash) {
+  const int8x16_t hash_vec = vdupq_n_s8((int8_t)hash);
+  const int8x16_t matches = vreinterpretq_s8_u8(vceqq_s8(*self, hash_vec));
+  return CWISS_Group_BitMask(CWISS_neon_movemask_epi8(matches));
+}
+
+// Returns a bitmask representing the positions of empty slots.
+static inline CWISS_BitMask CWISS_Group_MatchEmpty(const CWISS_Group* self) {
+  // kEmpty is -128, so we can use the sign bit directly
+  const int8x16_t empty_vec = vdupq_n_s8(CWISS_kEmpty);
+  const int8x16_t matches = vreinterpretq_s8_u8(vceqq_s8(*self, empty_vec));
+  return CWISS_Group_BitMask(CWISS_neon_movemask_epi8(matches));
+}
+
+// Returns a bitmask representing the positions of empty or deleted slots.
+static inline CWISS_BitMask CWISS_Group_MatchEmptyOrDeleted(
+    const CWISS_Group* self) {
+  const int8x16_t sentinel = vdupq_n_s8(CWISS_kSentinel);
+  const int8x16_t matches = vreinterpretq_s8_u8(vcgtq_s8(sentinel, *self));
+  return CWISS_Group_BitMask(CWISS_neon_movemask_epi8(matches));
+}
+
+// Returns the number of trailing empty or deleted elements in the group.
+static inline uint32_t CWISS_Group_CountLeadingEmptyOrDeleted(
+    const CWISS_Group* self) {
+  const int8x16_t sentinel = vdupq_n_s8(CWISS_kSentinel);
+  const int8x16_t matches = vreinterpretq_s8_u8(vcgtq_s8(sentinel, *self));
+  uint32_t mask = CWISS_neon_movemask_epi8(matches);
+  return CWISS_TrailingZeros(mask + 1);
+}
+
+static inline void CWISS_Group_ConvertSpecialToEmptyAndFullToDeleted(
+    const CWISS_Group* self, CWISS_ControlByte* dst) {
+  const int8x16_t msbs = vdupq_n_s8((int8_t)-128);
+  const int8x16_t x126 = vdupq_n_s8(126);
+  const int8x16_t zero = vdupq_n_s8(0);
+  
+  // Check which bytes are special (negative)
+  const uint8x16_t special_mask = vcltq_s8(*self, zero);
+  
+  // For special bytes: set to msbs (-128)
+  // For non-special bytes: set to x126 (126) OR msbs = -2 (deleted)
+  const int8x16_t result = vbslq_s8(special_mask, msbs, 
+                                    vorrq_s8(x126, msbs));
+  
+  vst1q_s8(dst, result);
+}
+
+#else  // CWISS_HAVE_SSE2 || CWISS_HAVE_NEON
+// Portable fallback implementation
 typedef uint64_t CWISS_Group;
   #define CWISS_Group_kWidth ((size_t)8)
   #define CWISS_Group_kShift 3

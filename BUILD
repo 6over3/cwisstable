@@ -127,6 +127,7 @@ cc_test(
     defines = [
         "CWISS_HAVE_SSE2=0",
         "CWISS_HAVE_SSSE3=0",
+        "CWISS_HAVE_NEON=0",
     ],
     copts = CWISS_TEST_COPTS + CWISS_CXX_VERSION + CWISS_SAN_COPTS,
     linkopts = CWISS_DEFAULT_LINKOPTS + CWISS_SAN_COPTS,

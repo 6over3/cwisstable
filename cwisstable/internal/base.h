@@ -124,6 +124,18 @@
   #endif
 #endif
 
+/// `CWISS_HAVE_NEON` is nonzero if we have NEON support.
+///
+/// `-DCWISS_HAVE_NEON` can be used to override it; it is otherwise detected
+/// via the usual non-portable feature-detection macros.
+#ifndef CWISS_HAVE_NEON
+  #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    #define CWISS_HAVE_NEON 1
+  #else
+    #define CWISS_HAVE_NEON 0
+  #endif
+#endif
+
 #if CWISS_HAVE_SSE2
   #include <emmintrin.h>
 #endif
@@ -133,6 +145,10 @@
     #error "Bad configuration: SSSE3 implies SSE2!"
   #endif
   #include <tmmintrin.h>
+#endif
+
+#if CWISS_HAVE_NEON
+  #include <arm_neon.h>
 #endif
 
 /// `CWISS_HAVE_BUILTIN` will, in Clang, detect whether a Clang language

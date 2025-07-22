@@ -323,7 +323,6 @@ static inline void CWISS_RawTable_Resize(const CWISS_Policy* policy,
   self->capacity_ = new_capacity;
   CWISS_RawTable_InitializeSlots(policy, self);
 
-  size_t total_probe_length = 0;
   for (size_t i = 0; i != old_capacity; ++i) {
     if (CWISS_IsFull(old_ctrl[i])) {
       size_t hash = policy->key->hash(
@@ -331,7 +330,6 @@ static inline void CWISS_RawTable_Resize(const CWISS_Policy* policy,
       CWISS_FindInfo target =
           CWISS_FindFirstNonFull(self->ctrl_, hash, self->capacity_);
       size_t new_i = target.offset;
-      total_probe_length += target.probe_length;
       CWISS_SetCtrl(new_i, CWISS_H2(hash), self->capacity_, self->ctrl_,
                     self->slots_, policy->slot->size);
       policy->slot->transfer(self->slots_ + new_i * policy->slot->size,
@@ -375,7 +373,6 @@ static void CWISS_RawTable_DropDeletesWithoutResize(const CWISS_Policy* policy,
   //       mark target as FULL
   //       repeat procedure for current slot with moved from element (target)
   CWISS_ConvertDeletedToEmptyAndFullToDeleted(self->ctrl_, self->capacity_);
-  size_t total_probe_length = 0;
   // Unfortunately because we do not know this size statically, we need to take
   // a trip to the allocator. Alternatively we could use a variable length
   // alloca...
@@ -390,7 +387,6 @@ static void CWISS_RawTable_DropDeletesWithoutResize(const CWISS_Policy* policy,
     const CWISS_FindInfo target =
         CWISS_FindFirstNonFull(self->ctrl_, hash, self->capacity_);
     const size_t new_i = target.offset;
-    total_probe_length += target.probe_length;
 
     char* new_slot = self->slots_ + new_i * policy->slot->size;
 
