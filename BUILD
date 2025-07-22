@@ -106,8 +106,8 @@ cc_test(
         ":debug",
         ":test_helpers",
 
-        "@com_google_absl//absl/cleanup",
-        "@com_google_googletest//:gtest_main",
+        "@abseil-cpp//absl/cleanup",
+        "@googletest//:gtest_main",
     ],
     copts = CWISS_TEST_COPTS + CWISS_CXX_VERSION + CWISS_SAN_COPTS,
     linkopts = CWISS_DEFAULT_LINKOPTS + CWISS_SAN_COPTS,
@@ -121,8 +121,8 @@ cc_test(
         ":debug",
         ":test_helpers",
 
-        "@com_google_absl//absl/cleanup",
-        "@com_google_googletest//:gtest_main",
+        "@abseil-cpp//absl/cleanup",
+        "@googletest//:gtest_main",
     ],
     defines = [
         "CWISS_HAVE_SSE2=0",
@@ -142,9 +142,9 @@ cc_binary(
         ":debug",
         ":test_helpers",
         
-        "@com_google_absl//absl/cleanup",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_github_google_benchmark//:benchmark_main",
+        "@abseil-cpp//absl/cleanup",
+        "@abseil-cpp//absl/strings:str_format",
+        "@google_benchmark//:benchmark_main",
     ],
     copts = CWISS_TEST_COPTS + CWISS_CXX_VERSION,
     linkopts = CWISS_DEFAULT_LINKOPTS,
